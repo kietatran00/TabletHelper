@@ -151,7 +151,7 @@ internal static class TabletBonusCatalog
             B("TowerRitualMagicMonsters", "Revived Monsters from Ritual Altars have increased chance to be Rare", Mechanic, N("TowerRitualMagicMonsters")),
             B("TowerRitualRareMonsters", "Revived Monsters from Ritual Altars have increased chance to be Magic", Mechanic, N("TowerRitualRareMonsters")),
             B("TowerRitualChanceForNoCost", "Favours Rerolled have chance to cost no Tribute", Mechanic, N("TowerRitualChanceForNoCost")),
-            B("TowerRitualAdditionalRerolls", "Ritual Altars allow rerolling Favours additional times", Mechanic, N("TowerRitualAdditionalRerolls")),
+            B("TowerRitualAdditionalReroll", "Ritual Altars allow rerolling Favours additional times", Mechanic, N("TowerRitualAdditionalReroll")),
             B("TowerRitualDeferSpeed", "Favours Deferred reappear sooner", Mechanic, N("TowerRitualDeferSpeed")),
             B("TowerRitualDeferCostIncrease", "Deferring Favours costs reduced Tribute", Mechanic, N("TowerRitualDeferCostIncrease")),
             B("TowerRitualRerollCostIncrease", "Rerolling Favours costs reduced Tribute", Mechanic, N("TowerRitualRerollCostIncrease")),
