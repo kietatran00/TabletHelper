@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using ExileCore2;
 using ExileCore2.PoEMemory.Elements;
@@ -29,12 +30,14 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
     private readonly HashSet<string> _collapsedSettingsNodesThisSession = new HashSet<string>(StringComparer.Ordinal);
     private readonly HashSet<string> _newlyAddedGroupsToOpen = new HashSet<string>(StringComparer.Ordinal);
 
-    private const string PluginVersion = "v1.0";
+    private const string PluginVersion = "v1.1";
 
     // Legacy full path is kept as a fallback. The preferred path is dynamic:
     // StashElement.StashInventoryPanel.Children[IndexVisibleStash] -> 0 -> 0 -> 0 -> 1 -> 0 -> 0 -> 0.
     private static readonly int[] LegacySpecialTabletStashItemsContainerPath = { 2, 0, 0, 0, 1, 1, 6, 0, 0, 0, 1, 0, 0, 0 };
     private static readonly int[] SpecialTabletStashItemsRelativePath = { 0, 0, 0, 1, 0, 0, 0 };
+    private const int MaxSpecialStashTargetedScanNodes = 900;
+    private const int MaxSpecialStashTargetedScanDepth = 12;
 
     private InventoryElement? _inventoryPanel;
     private StashElement? _stashPanel;
@@ -535,9 +538,10 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
         }
 
         // Special stash tabs, for example the Fragment/Tablet tab, do not always expose
-        // their slots through VisibleStash.VisibleInventoryItems. The Tablet sub-tab has
-        // a stable direct container path, so use that first and avoid scanning the whole UI tree.
-        if (_stashPanel?.IsVisible == true && (_stashPanel.VisibleStash?.VisibleInventoryItems?.Count ?? 0) == 0)
+        // their slots through VisibleStash.VisibleInventoryItems. Some Tablet stash pages
+        // expose a non-empty VisibleInventoryItems collection with stale or incomplete slots,
+        // so the targeted special-tab scan runs whenever the stash panel is visible.
+        if (_stashPanel?.IsVisible == true)
         {
             var foundViaDirectPath = Settings.UseDirectSpecialStashPath.Value && ScanSpecialStashDirectPath(_stashPanel, currentKeys);
             if (!foundViaDirectPath && Settings.AllowSpecialStashDeepFallback.Value)
@@ -550,7 +554,7 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
                 TrackStashItem(item, isQuad ? ItemLocation.QuadStash : ItemLocation.Stash, currentKeys);
         }
 
-        if (_guildStashPanel?.IsVisible == true && (_guildStashPanel.VisibleStash?.VisibleInventoryItems?.Count ?? 0) == 0)
+        if (_guildStashPanel?.IsVisible == true)
         {
             var foundViaDirectPath = Settings.UseDirectSpecialStashPath.Value && ScanSpecialStashDirectPath(_guildStashPanel, currentKeys);
             if (!foundViaDirectPath && Settings.AllowSpecialStashDeepFallback.Value)
@@ -574,26 +578,64 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
 
     private bool ScanSpecialStashDirectPath(object root, HashSet<long> currentKeys)
     {
-        var itemsContainer = TryGetSpecialStashItemsContainer(root);
-        if (itemsContainer == null || !IsUiElementVisible(itemsContainer))
+        var foundAnyTablet = false;
+
+        // Fast path for the known Tablet sub-tab item container.
+        // This still works for the first special page on the current UI layout.
+        var directContainer = TryGetSpecialStashItemsContainer(root);
+        if (directContainer != null && IsUiElementVisible(directContainer))
+            foundAnyTablet |= ScanSpecialStashUiSubtree(directContainer, currentKeys, MaxSpecialStashTargetedScanNodes, MaxSpecialStashTargetedScanDepth);
+
+        // Page buttons inside the Tablet stash can swap the active item container without
+        // changing StashElement.IndexVisibleStash or VisibleStash.VisibleInventoryItems.
+        // Scan only the currently visible stash tab root, not the full UI tree, so pages 2/3/4
+        // are discovered without enabling the expensive debug fallback.
+        var visibleTabRoot = TryGetDynamicVisibleStashRoot(root);
+        if (visibleTabRoot != null && !ReferenceEquals(visibleTabRoot, directContainer) && IsUiElementVisible(visibleTabRoot))
+            foundAnyTablet |= ScanSpecialStashUiSubtree(visibleTabRoot, currentKeys, MaxSpecialStashTargetedScanNodes, MaxSpecialStashTargetedScanDepth);
+
+        return foundAnyTablet;
+    }
+
+    private bool ScanSpecialStashUiSubtree(object root, HashSet<long> currentKeys, int maxNodes, int maxDepth)
+    {
+        if (root == null || maxNodes <= 0 || maxDepth < 0)
             return false;
 
+        var visited = new HashSet<int>();
+        var stack = new Stack<(object Element, int Depth)>();
+        stack.Push((root, 0));
+        var visitedNodes = 0;
         var foundAnyTablet = false;
-        foreach (var child in GetUiChildren(itemsContainer))
+
+        while (stack.Count > 0 && visitedNodes < maxNodes)
         {
-            if (child == null || !IsUiElementVisible(child))
+            var (element, depth) = stack.Pop();
+            if (element == null || depth > maxDepth)
                 continue;
 
-            var entity = TryGetUiEntity(child);
-            if (entity == null || string.IsNullOrEmpty(entity.Metadata) || !entity.Metadata.Contains("TowerAugment", StringComparison.OrdinalIgnoreCase))
+            var elementHash = RuntimeHelpers.GetHashCode(element);
+            if (!visited.Add(elementHash))
                 continue;
 
-            var rect = TryGetUiRect(child);
-            if (!IsUsableRect(rect))
+            visitedNodes++;
+
+            if (!IsUiElementVisible(element))
                 continue;
 
-            TrackUiElementItem(child, entity, ItemLocation.SpecialStash, currentKeys);
-            foundAnyTablet = true;
+            var entity = TryGetUiEntity(element);
+            if (entity != null && IsTabletEntity(entity))
+            {
+                var rect = TryGetUiRect(element);
+                if (IsUsableRect(rect))
+                {
+                    TrackUiElementItem(element, entity, ItemLocation.SpecialStash, currentKeys);
+                    foundAnyTablet = true;
+                }
+            }
+
+            foreach (var child in GetUiChildren(element))
+                stack.Push((child, depth + 1));
         }
 
         return foundAnyTablet;
@@ -613,6 +655,12 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
 
     private static object? TryGetDynamicSpecialStashItemsContainer(object stashElement)
     {
+        var visibleTabRoot = TryGetDynamicVisibleStashRoot(stashElement);
+        return visibleTabRoot == null ? null : TryGetChildByPath(visibleTabRoot, SpecialTabletStashItemsRelativePath);
+    }
+
+    private static object? TryGetDynamicVisibleStashRoot(object stashElement)
+    {
         var inventoryPanel = TryGetObjectProperty(stashElement, "StashInventoryPanel");
         if (inventoryPanel == null)
             return null;
@@ -621,11 +669,7 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
         if (visibleIndex < 0)
             return null;
 
-        var visibleTabRoot = TryGetChildAt(inventoryPanel, visibleIndex);
-        if (visibleTabRoot == null)
-            return null;
-
-        return TryGetChildByPath(visibleTabRoot, SpecialTabletStashItemsRelativePath);
+        return TryGetChildAt(inventoryPanel, visibleIndex);
     }
 
     private static object? TryGetObjectProperty(object element, string propertyName)
@@ -714,38 +758,7 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
     {
         const int maxNodes = 1200;
         const int maxDepth = 18;
-
-        var visited = new HashSet<int>();
-        var stack = new Stack<(object Element, int Depth)>();
-        stack.Push((root, 0));
-        var visitedNodes = 0;
-
-        while (stack.Count > 0 && visitedNodes < maxNodes)
-        {
-            var (element, depth) = stack.Pop();
-            if (element == null || depth > maxDepth)
-                continue;
-
-            var elementHash = element.GetHashCode();
-            if (!visited.Add(elementHash))
-                continue;
-
-            visitedNodes++;
-
-            if (!IsUiElementVisible(element))
-                continue;
-
-            var entity = TryGetUiEntity(element);
-            if (entity != null && !string.IsNullOrEmpty(entity.Metadata) && entity.Metadata.Contains("TowerAugment", StringComparison.OrdinalIgnoreCase))
-            {
-                var rect = TryGetUiRect(element);
-                if (IsUsableRect(rect))
-                    TrackUiElementItem(element, entity, ItemLocation.SpecialStash, currentKeys);
-            }
-
-            foreach (var child in GetUiChildren(element))
-                stack.Push((child, depth + 1));
-        }
+        ScanSpecialStashUiSubtree(root, currentKeys, maxNodes, maxDepth);
     }
 
     private static bool IsUiElementVisible(object element)
