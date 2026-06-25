@@ -217,21 +217,33 @@ internal static class TabletBonusCatalog
     {
         var result = new Dictionary<string, IReadOnlyList<TabletBonusDefinition>>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var type in TabletTypeSettings.CreateDefaults())
+        foreach (var type in TabletTypeSettings.CreateDefaults().Where(x => !IsGlobalTypeKey(x.Key)))
         {
             var list = new List<TabletBonusDefinition>(CommonBonuses);
             if (SpecificBonuses.TryGetValue(type.Key, out var specific))
                 list.AddRange(specific);
 
-            result[type.Key] = list
-                .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
-                .OrderBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            result[type.Key] = BuildDistinctSortedBonusList(list);
         }
 
+        result[TabletTypeKeys.Global] = BuildDistinctSortedBonusList(result.Values.SelectMany(x => x));
+
         return result;
+    }
+
+    private static IReadOnlyList<TabletBonusDefinition> BuildDistinctSortedBonusList(IEnumerable<TabletBonusDefinition> bonuses)
+    {
+        return bonuses
+            .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .OrderBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool IsGlobalTypeKey(string key)
+    {
+        return string.Equals(key, TabletTypeKeys.Global, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, TabletBonusDefinition>> BuildBonusLookupCache()

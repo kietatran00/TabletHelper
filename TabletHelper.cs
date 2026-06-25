@@ -30,7 +30,7 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
     private readonly HashSet<string> _collapsedSettingsNodesThisSession = new HashSet<string>(StringComparer.Ordinal);
     private readonly HashSet<string> _newlyAddedGroupsToOpen = new HashSet<string>(StringComparer.Ordinal);
 
-    private const string PluginVersion = "v1.1";
+    private const string PluginVersion = "v1.3";
 
     // Legacy full path is kept as a fallback. The preferred path is dynamic:
     // StashElement.StashInventoryPanel.Children[IndexVisibleStash] -> 0 -> 0 -> 0 -> 1 -> 0 -> 0 -> 0.
@@ -154,8 +154,8 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
                 if (matches.Count == 0)
                     continue;
 
-                // The first matching group keeps priority for the highlight color,
-                // but all matching group names are shown on the item label.
+                // Priority groups are ordered before normal matches, so the first match controls
+                // the highlight color while all matching group names remain visible on the label.
                 DrawHighlight(tablet.Rect, matches[0].Group.Color, tablet.Location);
 
                 if (Settings.ShowGroupLabel.Value && tablet.Location != ItemLocation.QuadStash)
@@ -252,7 +252,7 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
             if (typeSettings.Groups.Count == 0)
                 ImGui.TextDisabled("No groups yet. Add Group creates a rule for this tablet type.");
             else
-                ImGui.TextDisabled("All matching groups are shown on the label. First matching group controls highlight color.");
+                ImGui.TextDisabled("All matching groups are shown on the label. Priority groups control highlight color before normal groups.");
 
             for (var i = 0; i < typeSettings.Groups.Count; i++)
             {
@@ -293,6 +293,17 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
                 group.Enabled = enabled;
                 MarkMatchingSettingsChanged();
             }
+
+            var highlightPriority = group.HighlightPriority;
+            ImGui.SameLine();
+            if (ImGui.Checkbox("Priority highlight", ref highlightPriority))
+            {
+                group.HighlightPriority = highlightPriority;
+                MarkMatchingSettingsChanged();
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("When this group matches, its color is preferred before non-priority matching groups.");
 
             ImGui.SameLine();
             if (ImGui.SmallButton("Move Up") && index > 0)
@@ -983,15 +994,46 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
             return cached.Matches;
 
         var results = new List<TabletMatchResult>();
-        var typeSettings = Settings.TabletTypes.FirstOrDefault(x => string.Equals(x.Key, tablet.TabletTypeKey, StringComparison.OrdinalIgnoreCase));
-        if (typeSettings == null || !typeSettings.Enabled)
+
+        if (!TabletBonusCatalog.IsKnownTabletType(tablet.TabletTypeKey))
         {
             _matchCache[tablet.Key] = new CachedTabletMatches(_settingsVersion, results);
             return results;
         }
 
+        foreach (var typeSettings in GetMatchingRuleScopes(tablet.TabletTypeKey))
+            AddMatchesForRuleScope(tablet, typeSettings, results);
+
+        PrioritizeHighlightMatches(results);
+
+        _matchCache[tablet.Key] = new CachedTabletMatches(_settingsVersion, results);
+        return results;
+    }
+
+    private IEnumerable<TabletTypeSettings> GetMatchingRuleScopes(string tabletTypeKey)
+    {
+        foreach (var typeSettings in Settings.TabletTypes)
+        {
+            if (string.Equals(typeSettings.Key, tabletTypeKey, StringComparison.OrdinalIgnoreCase))
+                yield return typeSettings;
+        }
+
+        foreach (var typeSettings in Settings.TabletTypes)
+        {
+            if (string.Equals(typeSettings.Key, TabletTypeKeys.Global, StringComparison.OrdinalIgnoreCase))
+                yield return typeSettings;
+        }
+    }
+
+    private static void AddMatchesForRuleScope(TabletItem tablet, TabletTypeSettings typeSettings, List<TabletMatchResult> results)
+    {
+        if (typeSettings == null || !typeSettings.Enabled || typeSettings.Groups == null)
+            return;
+
         foreach (var group in typeSettings.Groups)
         {
+            group.EnsureDefaults();
+
             if (!group.Enabled || group.SelectedBonusIds.Count == 0)
                 continue;
 
@@ -1012,9 +1054,46 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
             if (matchedBonuses >= group.MinimumMatchedBonuses)
                 results.Add(new TabletMatchResult(group, matchedBonuses));
         }
+    }
 
-        _matchCache[tablet.Key] = new CachedTabletMatches(_settingsVersion, results);
-        return results;
+    private static void PrioritizeHighlightMatches(List<TabletMatchResult> results)
+    {
+        if (results.Count <= 1)
+            return;
+
+        var hasPriority = false;
+        var hasNormal = false;
+
+        foreach (var match in results)
+        {
+            if (match.Group.HighlightPriority)
+                hasPriority = true;
+            else
+                hasNormal = true;
+
+            if (hasPriority && hasNormal)
+                break;
+        }
+
+        if (!hasPriority || !hasNormal)
+            return;
+
+        var ordered = new List<TabletMatchResult>(results.Count);
+
+        foreach (var match in results)
+        {
+            if (match.Group.HighlightPriority)
+                ordered.Add(match);
+        }
+
+        foreach (var match in results)
+        {
+            if (!match.Group.HighlightPriority)
+                ordered.Add(match);
+        }
+
+        results.Clear();
+        results.AddRange(ordered);
     }
 
     private void RemoveMissingItems(HashSet<long> currentKeys)

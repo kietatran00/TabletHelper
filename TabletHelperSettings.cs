@@ -104,7 +104,8 @@ public class TabletTypeSettings
             new TabletTypeSettings { Key = TabletTypeKeys.Abyss, DisplayName = "Abyss Tablet" },
             new TabletTypeSettings { Key = TabletTypeKeys.Ritual, DisplayName = "Ritual Tablet" },
             new TabletTypeSettings { Key = TabletTypeKeys.Overseer, DisplayName = "Overseer Tablet" },
-            new TabletTypeSettings { Key = TabletTypeKeys.Temple, DisplayName = "Temple Tablet" }
+            new TabletTypeSettings { Key = TabletTypeKeys.Temple, DisplayName = "Temple Tablet" },
+            new TabletTypeSettings { Key = TabletTypeKeys.Global, DisplayName = "Global" }
         };
     }
 }
@@ -117,6 +118,7 @@ public class TabletRuleGroup
     public int MinimumMatchedBonuses { get; set; } = 1;
     public int MinimumUsesLeft { get; set; } = 1;
     public int ColorArgb { get; set; } = Color.DeepSkyBlue.ToArgb();
+    public bool HighlightPriority { get; set; } = false;
     public List<string> SelectedBonusIds { get; set; } = new List<string>();
 
     [JsonIgnore]
@@ -150,4 +152,5 @@ internal static class TabletTypeKeys
     internal const string Ritual = "Ritual";
     internal const string Overseer = "Overseer";
     internal const string Temple = "Temple";
+    internal const string Global = "Global";
 }
