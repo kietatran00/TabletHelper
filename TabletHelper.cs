@@ -30,6 +30,8 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
     private readonly HashSet<string> _collapsedSettingsNodesThisSession = new HashSet<string>(StringComparer.Ordinal);
     private readonly HashSet<string> _newlyAddedGroupsToOpen = new HashSet<string>(StringComparer.Ordinal);
 
+    private static readonly BonusRole[] AllBonusRoles = { BonusRole.Match, BonusRole.Require, BonusRole.Exclude };
+
     private const string PluginVersion = "v1.3";
 
     // Legacy full path is kept as a fallback. The preferred path is dynamic:
@@ -271,8 +273,7 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
         group.EnsureDefaults();
 
         ImGui.PushID(group.Id);
-        var selectedCount = group.SelectedBonusIds?.Count ?? 0;
-        var header = $"{group.Name}  [{selectedCount} selected]";
+        var header = BuildGroupHeader(group);
 
         var groupCollapseKey = "group:" + group.Id;
         if (_newlyAddedGroupsToOpen.Remove(group.Id))
@@ -343,14 +344,6 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
                 MarkMatchingSettingsChanged();
             }
 
-            var minBonuses = group.MinimumMatchedBonuses;
-            ImGui.SetNextItemWidth(90);
-            if (ImGui.InputInt("Minimum matched bonuses", ref minBonuses, 1, 1))
-            {
-                group.MinimumMatchedBonuses = Math.Clamp(minBonuses, 1, 20);
-                MarkMatchingSettingsChanged();
-            }
-
             var minUses = group.MinimumUsesLeft;
             ImGui.SetNextItemWidth(90);
             if (ImGui.InputInt("Minimum uses left", ref minUses, 1, 1))
@@ -362,69 +355,211 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
             if (DrawColorEdit("Group color", group.Color, c => group.Color = c))
                 MarkMatchingSettingsChanged();
 
-            var searchKey = typeSettings.Key + ":" + group.Id;
-            if (!_bonusSearch.TryGetValue(searchKey, out var search))
-                search = string.Empty;
-
-            ImGui.SetNextItemWidth(320);
-            if (ImGui.InputText("Search bonuses", ref search, 128))
-                _bonusSearch[searchKey] = search;
-
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Clear All"))
+            ImGui.Spacing();
+            if (ImGui.BeginTabBar("##bonus_role_tabs", ImGuiTabBarFlags.None))
             {
-                group.SelectedBonusIds.Clear();
-                MarkMatchingSettingsChanged();
+                DrawBonusRoleTab(typeSettings.Key, group, BonusRole.Match);
+                DrawBonusRoleTab(typeSettings.Key, group, BonusRole.Require);
+                DrawBonusRoleTab(typeSettings.Key, group, BonusRole.Exclude);
+                ImGui.EndTabBar();
             }
-
-            DrawBonusList(typeSettings.Key, group, search);
 
             ImGui.TreePop();
         }
         ImGui.PopID();
     }
 
-    private void DrawBonusList(string tabletTypeKey, TabletRuleGroup group, string search)
+    private void DrawBonusRoleTab(string tabletTypeKey, TabletRuleGroup group, BonusRole role)
+    {
+        var list = GetBonusRoleList(group, role);
+        var accent = GetBonusRoleAccent(role);
+
+        var title = role switch
+        {
+            BonusRole.Require => $"Require ({list.Count})###tab_require",
+            BonusRole.Exclude => $"Exclude ({list.Count})###tab_exclude",
+            _ => $"Match ({list.Count})###tab_match"
+        };
+
+        // Tint only the tab label, not the tab body.
+        ImGui.PushStyleColor(ImGuiCol.Text, accent);
+        var open = ImGui.BeginTabItem(title);
+        ImGui.PopStyleColor();
+        if (!open)
+            return;
+
+        switch (role)
+        {
+            case BonusRole.Require:
+                HelpText("Tablet must also have at least the set number of these (AND). Leave empty to ignore.");
+                DrawMinimumInput("Minimum required", group.MinimumRequiredBonuses, v => group.MinimumRequiredBonuses = v);
+                break;
+            case BonusRole.Exclude:
+                HelpText("Skip the tablet if it has any of these (NOT). Leave empty to ignore.");
+                break;
+            default:
+                HelpText("Highlight when at least the set number of these are present.");
+                DrawMinimumInput("Minimum to match", group.MinimumMatchedBonuses, v => group.MinimumMatchedBonuses = v);
+                break;
+        }
+
+        var searchKey = tabletTypeKey + ":" + group.Id + ":" + role;
+        if (!_bonusSearch.TryGetValue(searchKey, out var search))
+            search = string.Empty;
+
+        ImGui.SetNextItemWidth(300);
+        if (ImGui.InputText("Search##" + role, ref search, 128))
+            _bonusSearch[searchKey] = search;
+
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Clear##" + role) && list.Count > 0)
+        {
+            list.Clear();
+            MarkMatchingSettingsChanged();
+        }
+
+        DrawBonusChecklist(tabletTypeKey, group, role, search);
+
+        ImGui.EndTabItem();
+    }
+
+    private void DrawBonusChecklist(string tabletTypeKey, TabletRuleGroup group, BonusRole role, string search)
     {
         var bonuses = TabletBonusCatalog.GetBonusesFor(tabletTypeKey)
-            .Where(b => string.IsNullOrWhiteSpace(search) || b.Label.Contains(search, StringComparison.OrdinalIgnoreCase) || b.Category.Contains(search, StringComparison.OrdinalIgnoreCase) || b.Id.Contains(search, StringComparison.OrdinalIgnoreCase))
+            .Where(b => string.IsNullOrWhiteSpace(search)
+                || b.Label.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || b.Category.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || b.Id.Contains(search, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        var selected = group.SelectedBonusIds ??= new List<string>();
+        var list = GetBonusRoleList(group, role);
+        var accent = GetBonusRoleAccent(role);
 
-        var childHeight = Math.Clamp(bonuses.Count * 24 + 28, 140, 420);
-        var childVisible = ImGui.BeginChild("##bonus_list", new Vector2(0, childHeight), ImGuiChildFlags.Border);
+        var childHeight = Math.Clamp(bonuses.Count * 24 + 28, 140, 360);
+        var childVisible = ImGui.BeginChild("##bonus_list_" + role, new Vector2(0, childHeight), ImGuiChildFlags.Border);
         if (childVisible)
         {
+            ImGui.PushStyleColor(ImGuiCol.CheckMark, accent);
+
             foreach (var bonus in bonuses)
             {
-                var isSelected = selected.Contains(bonus.Id, StringComparer.OrdinalIgnoreCase);
-                if (ImGui.Checkbox($"{bonus.Label}##{bonus.Id}", ref isSelected))
-                {
-                    if (isSelected)
-                    {
-                        if (!selected.Contains(bonus.Id, StringComparer.OrdinalIgnoreCase))
-                        {
-                            selected.Add(bonus.Id);
-                            MarkMatchingSettingsChanged();
-                        }
-                    }
-                    else
-                    {
-                        if (selected.RemoveAll(x => string.Equals(x, bonus.Id, StringComparison.OrdinalIgnoreCase)) > 0)
-                            MarkMatchingSettingsChanged();
-                    }
-                }
+                var isSelected = list.Contains(bonus.Id, StringComparer.OrdinalIgnoreCase);
+                if (ImGui.Checkbox($"{bonus.Label}##{role}_{bonus.Id}", ref isSelected))
+                    SetBonusRole(group, role, bonus.Id, isSelected);
 
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip($"{bonus.Category} | {bonus.Id}");
+                    ImGui.SetTooltip($"{bonus.Category} | {bonus.Id}{DescribeOtherRole(group, role, bonus.Id)}");
             }
 
             if (bonuses.Count == 0)
                 ImGui.TextDisabled("No bonuses match the search.");
+
+            ImGui.PopStyleColor();
         }
 
         ImGui.EndChild();
+    }
+
+    private void DrawMinimumInput(string label, int current, Action<int> setValue)
+    {
+        var value = current;
+        ImGui.SetNextItemWidth(90);
+        if (ImGui.InputInt(label, ref value, 1, 1))
+        {
+            setValue(Math.Clamp(value, 1, 20));
+            MarkMatchingSettingsChanged();
+        }
+    }
+
+    // A bonus belongs to a single role at a time. Selecting it in one list removes it from the
+    // others, so a mod can never be both wanted and excluded.
+    private void SetBonusRole(TabletRuleGroup group, BonusRole role, string bonusId, bool selected)
+    {
+        var changed = false;
+
+        if (selected)
+        {
+            foreach (var other in AllBonusRoles)
+            {
+                if (other != role)
+                    changed |= RemoveBonusId(GetBonusRoleList(group, other), bonusId);
+            }
+
+            var target = GetBonusRoleList(group, role);
+            if (!target.Contains(bonusId, StringComparer.OrdinalIgnoreCase))
+            {
+                target.Add(bonusId);
+                changed = true;
+            }
+        }
+        else
+        {
+            changed |= RemoveBonusId(GetBonusRoleList(group, role), bonusId);
+        }
+
+        if (changed)
+            MarkMatchingSettingsChanged();
+    }
+
+    private static string DescribeOtherRole(TabletRuleGroup group, BonusRole role, string bonusId)
+    {
+        foreach (var other in AllBonusRoles)
+        {
+            if (other == role)
+                continue;
+
+            if (GetBonusRoleList(group, other).Contains(bonusId, StringComparer.OrdinalIgnoreCase))
+                return $"\nCurrently in {other}. Selecting here moves it.";
+        }
+
+        return string.Empty;
+    }
+
+    private static bool RemoveBonusId(List<string> list, string bonusId)
+    {
+        return list.RemoveAll(x => string.Equals(x, bonusId, StringComparison.OrdinalIgnoreCase)) > 0;
+    }
+
+    private static List<string> GetBonusRoleList(TabletRuleGroup group, BonusRole role)
+    {
+        return role switch
+        {
+            BonusRole.Require => group.RequiredBonusIds,
+            BonusRole.Exclude => group.ExcludedBonusIds,
+            _ => group.SelectedBonusIds
+        };
+    }
+
+    private static Vector4 GetBonusRoleAccent(BonusRole role)
+    {
+        return role switch
+        {
+            BonusRole.Require => new Vector4(0.40f, 0.80f, 1.00f, 1f), // cyan: required "AND"
+            BonusRole.Exclude => new Vector4(1.00f, 0.45f, 0.45f, 1f), // red: excluded "NOT"
+            _ => new Vector4(0.55f, 0.90f, 0.55f, 1f)                  // green: wanted "match"
+        };
+    }
+
+    private static string BuildGroupHeader(TabletRuleGroup group)
+    {
+        var match = group.SelectedBonusIds?.Count ?? 0;
+        var require = group.RequiredBonusIds?.Count ?? 0;
+        var exclude = group.ExcludedBonusIds?.Count ?? 0;
+
+        var badge = $"{match} match";
+        if (require > 0)
+            badge += $" | {require} req";
+        if (exclude > 0)
+            badge += $" | {exclude} excl";
+
+        return $"{group.Name}  [{badge}]";
+    }
+
+    private static void HelpText(string text)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled]);
+        ImGui.TextWrapped(text);
+        ImGui.PopStyleColor();
     }
 
     private void DrawDebugSettings()
@@ -1040,20 +1175,35 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
             if (tablet.UsesLeft < group.MinimumUsesLeft)
                 continue;
 
-            var matchedBonuses = 0;
-            foreach (var bonusId in group.SelectedBonusIds.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                var bonus = TabletBonusCatalog.Find(typeSettings.Key, bonusId);
-                if (bonus == null)
-                    continue;
+            var matchedBonuses = CountMatchingBonuses(tablet, typeSettings.Key, group.SelectedBonusIds);
+            if (matchedBonuses < group.MinimumMatchedBonuses)
+                continue;
 
-                if (bonus.Matches(tablet))
-                    matchedBonuses++;
-            }
+            // Optional "AND" gate: the tablet must also carry the required bonuses.
+            if (group.RequiredBonusIds.Count > 0 &&
+                CountMatchingBonuses(tablet, typeSettings.Key, group.RequiredBonusIds) < group.MinimumRequiredBonuses)
+                continue;
 
-            if (matchedBonuses >= group.MinimumMatchedBonuses)
-                results.Add(new TabletMatchResult(group, matchedBonuses));
+            // Optional "NOT" gate: skip if the tablet carries any excluded bonus.
+            if (group.ExcludedBonusIds.Count > 0 &&
+                CountMatchingBonuses(tablet, typeSettings.Key, group.ExcludedBonusIds) > 0)
+                continue;
+
+            results.Add(new TabletMatchResult(group, matchedBonuses));
         }
+    }
+
+    private static int CountMatchingBonuses(TabletItem tablet, string tabletTypeKey, IEnumerable<string> bonusIds)
+    {
+        var count = 0;
+        foreach (var bonusId in bonusIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var bonus = TabletBonusCatalog.Find(tabletTypeKey, bonusId);
+            if (bonus != null && bonus.Matches(tablet))
+                count++;
+        }
+
+        return count;
     }
 
     private static void PrioritizeHighlightMatches(List<TabletMatchResult> results)
@@ -1492,6 +1642,13 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
 
         _matchCache.Clear();
     }
+}
+
+internal enum BonusRole
+{
+    Match,
+    Require,
+    Exclude
 }
 
 internal sealed class CachedTabletMatches

@@ -119,7 +119,17 @@ public class TabletRuleGroup
     public int MinimumUsesLeft { get; set; } = 1;
     public int ColorArgb { get; set; } = Color.DeepSkyBlue.ToArgb();
     public bool HighlightPriority { get; set; } = false;
+
+    // Primary "match" set. The group highlights when at least MinimumMatchedBonuses of these are present.
     public List<string> SelectedBonusIds { get; set; } = new List<string>();
+
+    // Optional "AND" gate. When non-empty, the tablet must also carry at least
+    // MinimumRequiredBonuses of these. Empty means the gate is skipped (backward compatible).
+    public List<string> RequiredBonusIds { get; set; } = new List<string>();
+    public int MinimumRequiredBonuses { get; set; } = 1;
+
+    // Optional "NOT" gate. When non-empty, the tablet is skipped if it carries any of these.
+    public List<string> ExcludedBonusIds { get; set; } = new List<string>();
 
     [JsonIgnore]
     public Color Color
@@ -136,9 +146,13 @@ public class TabletRuleGroup
             Name = "New Group";
         if (MinimumMatchedBonuses < 1)
             MinimumMatchedBonuses = 1;
+        if (MinimumRequiredBonuses < 1)
+            MinimumRequiredBonuses = 1;
         if (MinimumUsesLeft < 0)
             MinimumUsesLeft = 0;
         SelectedBonusIds ??= new List<string>();
+        RequiredBonusIds ??= new List<string>();
+        ExcludedBonusIds ??= new List<string>();
     }
 }
 
