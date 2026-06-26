@@ -395,10 +395,15 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
                 DrawMinimumInput("Minimum required", group.MinimumRequiredBonuses, v => group.MinimumRequiredBonuses = v);
                 break;
             case BonusRole.Exclude:
-                HelpText("Skip the tablet if it has any of these (NOT). Leave empty to ignore.");
+                if (group.SelectedBonusIds.Count == 0)
+                    HelpText("This group has no Match bonuses, so it is a blocklist: a tablet with any of these is never highlighted (Global tab blocks every tablet; a tablet tab blocks that type).");
+                else
+                    HelpText("Skip this group's highlight if the tablet has any of these (NOT). Leave empty to ignore.");
                 break;
             default:
                 HelpText("Highlight when at least the set number of these are present.");
+                if (group.SelectedBonusIds.Count == 0 && group.ExcludedBonusIds.Count > 0)
+                    HelpText("Empty + Exclude set = this group is acting as a blocklist (see the Exclude tab).");
                 DrawMinimumInput("Minimum to match", group.MinimumMatchedBonuses, v => group.MinimumMatchedBonuses = v);
                 break;
         }
@@ -545,6 +550,10 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
         var match = group.SelectedBonusIds?.Count ?? 0;
         var require = group.RequiredBonusIds?.Count ?? 0;
         var exclude = group.ExcludedBonusIds?.Count ?? 0;
+
+        // No Match bonuses but Exclude set -> the group acts as a blocklist.
+        if (match == 0 && exclude > 0)
+            return $"{group.Name}  [blocklist | {exclude} excl]";
 
         var badge = $"{match} match";
         if (require > 0)
@@ -1136,13 +1145,42 @@ public class TabletHelper : BaseSettingsPlugin<TabletHelperSettings>
             return results;
         }
 
-        foreach (var typeSettings in GetMatchingRuleScopes(tablet.TabletTypeKey))
-            AddMatchesForRuleScope(tablet, typeSettings, results);
+        // A blocklist (exclude-only) group suppresses the tablet entirely, before any group can match.
+        if (!IsTabletBlocked(tablet))
+        {
+            foreach (var typeSettings in GetMatchingRuleScopes(tablet.TabletTypeKey))
+                AddMatchesForRuleScope(tablet, typeSettings, results);
 
-        PrioritizeHighlightMatches(results);
+            PrioritizeHighlightMatches(results);
+        }
 
         _matchCache[tablet.Key] = new CachedTabletMatches(_settingsVersion, results);
         return results;
+    }
+
+    // An "exclude-only" group (no Match bonuses, but with Exclude bonuses) acts as a blocklist:
+    // if the tablet carries any of its excluded bonuses it is never highlighted, overriding every
+    // other group. A blocklist in the Global tab blocks all tablets; in a tablet tab it blocks that type.
+    private bool IsTabletBlocked(TabletItem tablet)
+    {
+        foreach (var typeSettings in GetMatchingRuleScopes(tablet.TabletTypeKey))
+        {
+            if (typeSettings == null || !typeSettings.Enabled || typeSettings.Groups == null)
+                continue;
+
+            foreach (var group in typeSettings.Groups)
+            {
+                group.EnsureDefaults();
+
+                if (!group.Enabled || group.SelectedBonusIds.Count > 0 || group.ExcludedBonusIds.Count == 0)
+                    continue;
+
+                if (CountMatchingBonuses(tablet, typeSettings.Key, group.ExcludedBonusIds) > 0)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private IEnumerable<TabletTypeSettings> GetMatchingRuleScopes(string tabletTypeKey)
